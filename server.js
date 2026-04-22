@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { exec } = require('child_process');
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
@@ -14,6 +15,7 @@ const IMAGE_ROOT_PATH = process.env.IMAGE_ROOT_PATH || '/';
 
 const PORT = process.env.PORT || 8000;
 const ROOT_DIR = path.resolve(IMAGE_ROOT_PATH);
+const DIST_DIR = path.join(__dirname, 'dist');
 
 const CACHE_FILE = path.resolve("cache.json");
 const CACHE_EXPIRATION = 1000 * 60 * 60; // 1 hour
@@ -231,13 +233,25 @@ app.get(`${BASE_API_URL}/folders/*`, (req, res) => imageApiHandler(req, res, tru
 app.get(`${BASE_API_URL}/images`, (req, res) => imageApiHandler(req, res, false));
 app.get(`${BASE_API_URL}/images/*`, (req, res) => imageApiHandler(req, res, false));
 
-// Serve files with ETags, Range support, and cache headers
+// Serve the bundled Vue app (JS, CSS, index.html)
+if (fs.existsSync(DIST_DIR)) {
+    app.use(express.static(DIST_DIR));
+}
+
+// Serve image files with ETags, Range support, and cache headers
 app.use(express.static(ROOT_DIR));
 
 /**
- * Fallback: Basic file browser in HTML (directories only — files are handled above)
+ * Fallback: serve Vue's index.html for any unmatched route (SPA routing).
+ * Falls back to the plain file browser when no dist build is present (dev mode).
  */
 app.get('*', (req, res) => {
+    const indexPath = path.join(DIST_DIR, 'index.html');
+    if (fs.existsSync(indexPath)) {
+        return res.send(fs.readFileSync(indexPath, 'utf8'));
+    }
+
+    // Dev fallback: basic directory browser
     const requestedPath = decodeURIComponent(req.path);
     const filePath = req.filePath;
 
@@ -257,7 +271,6 @@ app.get('*', (req, res) => {
             const fileUrl = path.join(requestedPath, file).replace(/\\/g, '/');
             const fullPath = path.join(filePath, file);
             const isDirectory = fs.statSync(fullPath).isDirectory();
-
             html += `<li><a href="${fileUrl}">${isDirectory ? '📁 ' : '🖼️ '}${file}</a></li>`;
         });
 
@@ -268,5 +281,14 @@ app.get('*', (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Server running at http://${getLocalIP()}:${PORT}`)
+    const localUrl = `http://localhost:${PORT}`;
+    const networkUrl = `http://${getLocalIP()}:${PORT}`;
+    console.log(`Server running at ${localUrl} (network: ${networkUrl})`);
+
+    // Auto-open the browser when the dist build is present (i.e. running as packaged app)
+    if (fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
+        exec(`start "" "${localUrl}"`, (err) => {
+            if (err) console.log(`Open your browser to: ${localUrl}`);
+        });
+    }
 });
