@@ -119,7 +119,13 @@ function imageApiHandler(req, res, onlyFolders = false) {
 
         // Attempt to laod from cache
         let cache = loadCacheFromFile();
-        if (cache[cacheKeyName] && Date.now() - cache[cacheKeyName].lastUpdated < CACHE_EXPIRATION)  {
+
+        // Uncomment to enable cache expiration
+        // if (cache[cacheKeyName] && Date.now() - cache[cacheKeyName].lastUpdated < CACHE_EXPIRATION)  {
+            
+        //     return res.json(cache[cacheKeyName].data);
+        // }
+        if (cache[cacheKeyName])  {
             
             return res.json(cache[cacheKeyName].data);
         }
