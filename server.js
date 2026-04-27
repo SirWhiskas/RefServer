@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { exec } = require('child_process');
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
@@ -9,19 +10,23 @@ const app = express();
 
 app.use(cors());
 
-//cors to fix cors origin, body-parser to fix the post value on the server
-// const cors = require('cors');
-// const bodyParser = require('body-parser');
-// app.use(cors());
-// app.use(bodyParser.json());
 const BASE_API_URL = process.env.BASE_API_URL || '/my/api/path';
 const IMAGE_ROOT_PATH = process.env.IMAGE_ROOT_PATH || '/';
 
-const PORT = 8000;
+const PORT = process.env.PORT || 8000;
 const ROOT_DIR = path.resolve(IMAGE_ROOT_PATH);
+const DIST_DIR = path.join(__dirname, 'dist');
 
 const CACHE_FILE = path.resolve("cache.json");
 const CACHE_EXPIRATION = 1000 * 60 * 60; // 1 hour
+
+const IMAGE_EXTENSIONS = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp'
+};
 
 // Get the local network IP
 function getLocalIP() {
@@ -36,6 +41,10 @@ function getLocalIP() {
     return 'localhost';
 }
 
+function isSafePath(p) {
+    return path.resolve(p).startsWith(ROOT_DIR);
+}
+
 // Load cache from file
 function loadCacheFromFile() {
     try {
@@ -45,13 +54,15 @@ function loadCacheFromFile() {
     } catch (err) {
         console.error("Error reading cache file:", err);
     }
-    return {}; // Return empty object if no cache exists
+    return {};
 }
 
 // Save cache to file
 function saveCacheToFile(cache) {
     fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), "utf8");
 }
+
+let cache = loadCacheFromFile();
 
 // Utility function to shuffle an array
 function shuffleArray(array) {
@@ -74,19 +85,17 @@ function readDirectoryRecursive(directory, keyPrefix = '', onlyFolders = false) 
             const stats = fs.statSync(filePath);
 
             if (stats.isDirectory()) {
-                // If it's a directory, recurse into it
                 results.push({
-                    key: `${keyPrefix}${fileIndex}`, // Unique key for the tree
+                    key: `${keyPrefix}${fileIndex}`,
                     label: file,
                     data: `${file} folder`,
                     icon: 'pi pi-folder',
                     path: filePath.replace(ROOT_DIR, ""),
-                    children: readDirectoryRecursive(filePath, `${keyPrefix}${fileIndex}-`, onlyFolders) // Recursively read the directory
+                    children: readDirectoryRecursive(filePath, `${keyPrefix}${fileIndex}-`, onlyFolders)
                 });
             } else if (!onlyFolders) {
-                // If it's a file, add it to the result
                 results.push({
-                    key: `${keyPrefix}${fileIndex}`, // Unique key for the tree
+                    key: `${keyPrefix}${fileIndex}`,
                     label: file,
                     data: `${file} image`,
                     icon: 'pi pi-image',
@@ -104,16 +113,15 @@ function readDirectoryRecursive(directory, keyPrefix = '', onlyFolders = false) 
 }
 
 function imageApiHandler(req, res, onlyFolders = false) {
-    try{
-        const folderPath = req.params[0] || ''; // Capture everything after /api/images/
+    try {
+        const folderPath = req.params[0] || '';
         const dirPath = path.join(ROOT_DIR, folderPath);
-        const resolvedRoot = path.resolve(ROOT_DIR);
         const resolvedDirPath = path.resolve(dirPath);
 
         const cacheKeyName = onlyFolders ? resolvedDirPath + '-onlyFolders' : resolvedDirPath;
 
         // Security check: Prevent access outside ROOT_DIR
-        if (!resolvedDirPath.startsWith(resolvedRoot)) {
+        if (!isSafePath(dirPath)) {
             return res.status(403).json({ error: 'Access Denied' });
         }
 
@@ -130,67 +138,41 @@ function imageApiHandler(req, res, onlyFolders = false) {
             return res.json(cache[cacheKeyName].data);
         }
 
-        // Check that the folder exists
         fs.stat(resolvedDirPath, (err, stats) => {
             if (err || !stats) {
                 return res.status(404).json({ error: 'Directory not found' });
             }
 
             if (!stats.isDirectory()) {
-                const filePath = path.join(ROOT_DIR, req.params[0]);
-                const resolvedRoot = path.resolve(ROOT_DIR);
-                const resolvedPath = path.resolve(filePath);
-
-                // Prevent access outside the ROOT_DIR
-                if (!resolvedPath.startsWith(resolvedRoot)) {
-                    return res.status(403).send('Access Denied');
-                }
-
-                fs.stat(resolvedPath, (err, stats) => {
-                    if (err || !stats) {
-                        return res.status(404).send('File not found');
-                    }
-
-                    // Determine MIME type
-                    const ext = path.extname(resolvedPath).toLowerCase();
-                    const mimeTypes = {
-                        '.jpg': 'image/jpeg',
-                        '.jpeg': 'image/jpeg',
-                        '.png': 'image/png',
-                        '.gif': 'image/gif',
-                        '.webp': 'image/webp'
-                    };
-                    const contentType = mimeTypes[ext] || 'application/octet-stream';
-                    res.setHeader('Content-Type', contentType);
-                    fs.createReadStream(resolvedPath).pipe(res);
-                });
+                const ext = path.extname(resolvedDirPath).toLowerCase();
+                const contentType = IMAGE_EXTENSIONS[ext] || 'application/octet-stream';
+                res.setHeader('Content-Type', contentType);
+                fs.createReadStream(resolvedDirPath).pipe(res);
             } else {
-                fs.readdir(resolvedDirPath, (err, files) => {
-                    if (err) {
-                        return res.status(500).json({ error: 'Error reading directory' });
-                    }
+                const images = readDirectoryRecursive(resolvedDirPath, '', onlyFolders);
 
-                    
+                cache[cacheKeyName] = {
+                    lastUpdated: Date.now(),
+                    data: images
+                };
 
-                    // Not in cache or cache expired, read the directory and save to cache
-                    const images = readDirectoryRecursive(resolvedDirPath, '', onlyFolders);
-                    
-                    cache[cacheKeyName] = {
-                        lastUpdated: Date.now(),
-                        data: images
-                    };
+                saveCacheToFile(cache);
 
-                    saveCacheToFile(cache);
-
-                    res.json(images);
-                });
-            }    
+                res.json(images);
+            }
         });
     } catch (err) {
-        console.error(`Error reading directory ${directory}:`, err);
+        console.error(`Error in imageApiHandler:`, err);
     }
-    
 }
+
+const API_TOKEN = process.env.API_TOKEN;
+
+app.use((req, res, next) => {
+    if (!API_TOKEN) return next();
+    if (req.headers['x-api-key'] === API_TOKEN) return next();
+    return res.status(401).json({ error: 'Unauthorized' });
+});
 
 /**
  * Middleware to prevent access outside the ROOT_DIR
@@ -199,13 +181,12 @@ app.use((req, res, next) => {
     if (req.path === BASE_API_URL) {
         req.filePath = ROOT_DIR;
         return next();
-
     }
     const requestedPath = decodeURIComponent(req.path);
     const filePath = path.join(ROOT_DIR, requestedPath);
 
     // Prevent directory traversal attacks
-    if (!filePath.startsWith(ROOT_DIR)) {
+    if (!isSafePath(filePath)) {
         return res.status(403).send('Access Denied');
     }
 
@@ -217,44 +198,38 @@ app.use((req, res, next) => {
  * Serve random set of images in a given folder
  */
 app.get(`${BASE_API_URL}/random-images/*`, (req, res) => {
-    const folderPath = req.params[0] || ''; // Capture directory path
+    const folderPath = req.params[0] || '';
     const dirPath = path.join(ROOT_DIR, folderPath);
-    const resolvedRoot = path.resolve(ROOT_DIR);
     const resolvedDirPath = path.resolve(dirPath);
 
     // Security check: Prevent access outside ROOT_DIR
-    if (!resolvedDirPath.startsWith(resolvedRoot)) {
+    if (!isSafePath(dirPath)) {
         return res.status(403).json({ error: 'Access Denied' });
     }
 
-    // Check that the folder exists
     fs.stat(resolvedDirPath, (err, stats) => {
         if (err || !stats || !stats.isDirectory()) {
             return res.status(404).json({ error: 'Directory not found' });
         }
 
-        // Read the directory contents
         fs.readdir(resolvedDirPath, (err, files) => {
             if (err) {
                 return res.status(500).json({ error: 'Error reading directory' });
             }
 
-            // Filter only image files
             const imageFiles = files.filter(file => {
                 const ext = path.extname(file).toLowerCase();
-                return ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext);
+                return ext in IMAGE_EXTENSIONS;
             });
 
             if (imageFiles.length === 0) {
                 return res.status(404).json({ error: 'No images found' });
             }
 
-            // Get the number of images requested (default to 5)
             const numImages = parseInt(req.query.num, 10) || 5;
             const shuffledImages = shuffleArray(imageFiles);
             const selectedImages = shuffledImages.slice(0, numImages);
 
-            // Return image paths or serve images directly
             const imagePaths = selectedImages.map(file => path.join(folderPath, file));
             res.json({ images: imagePaths });
         });
@@ -274,64 +249,62 @@ app.get(`${BASE_API_URL}/folders/*`, (req, res) => imageApiHandler(req, res, tru
 app.get(`${BASE_API_URL}/images`, (req, res) => imageApiHandler(req, res, false));
 app.get(`${BASE_API_URL}/images/*`, (req, res) => imageApiHandler(req, res, false));
 
+// Serve the bundled Vue app (JS, CSS, index.html)
+if (fs.existsSync(DIST_DIR)) {
+    app.use(express.static(DIST_DIR));
+}
+
+// Serve image files with ETags, Range support, and cache headers
+app.use(express.static(ROOT_DIR));
+
 /**
- * Fallback: Basic file browser in HTML
+ * Fallback: serve Vue's index.html for any unmatched route (SPA routing).
+ * Falls back to the plain file browser when no dist build is present (dev mode).
  */
 app.get('*', (req, res) => {
+    const indexPath = path.join(DIST_DIR, 'index.html');
+    if (fs.existsSync(indexPath)) {
+        return res.send(fs.readFileSync(indexPath, 'utf8'));
+    }
+
+    // Dev fallback: basic directory browser
     const requestedPath = decodeURIComponent(req.path);
     const filePath = req.filePath;
 
-    fs.stat(filePath, (err, stats) => {
+    fs.readdir(filePath, (err, files) => {
         if (err) {
-            return res.status(404).send('File not found');
+            return res.status(404).send('Not found');
         }
 
-        if (stats.isDirectory()) {
-            // List directory contents
-            fs.readdir(filePath, (err, files) => {
-                if (err) {
-                    return res.status(500).send('Error reading directory');
-                }
+        let html = `<html><body><h1>Image Browser</h1><ul>`;
 
-                let html = `<html><body><h1>Image Browser</h1><ul>`;
-
-                // Add a "Go Back" link if not in the root
-                if (requestedPath !== '/') {
-                    const parentDir = path.dirname(requestedPath);
-                    html += `<li><a href="${parentDir === '.' ? '/' : parentDir}">⬆️ Go Back</a></li>`;
-                }
-
-                files.forEach(file => {
-                    const fileUrl = path.join(requestedPath, file).replace(/\\/g, '/');
-                    const fullPath = path.join(filePath, file);
-                    const isDirectory = fs.statSync(fullPath).isDirectory();
-
-                    html += `<li><a href="${fileUrl}">${isDirectory ? '📁 ' : '🖼️ '}${file}</a></li>`;
-                });
-
-                html += `</ul></body></html>`;
-                res.send(html);
-            });
-        } else {
-            // Serve image files
-            const ext = path.extname(filePath).toLowerCase();
-            const mimeTypes = {
-                '.jpg': 'image/jpeg',
-                '.jpeg': 'image/jpeg',
-                '.png': 'image/png',
-                '.gif': 'image/gif',
-                '.webp': 'image/webp',
-            };
-
-            const contentType = mimeTypes[ext] || 'application/octet-stream';
-            res.setHeader('Content-Type', contentType);
-            fs.createReadStream(filePath).pipe(res);
+        if (requestedPath !== '/') {
+            const parentDir = path.dirname(requestedPath);
+            html += `<li><a href="${parentDir === '.' ? '/' : parentDir}">⬆️ Go Back</a></li>`;
         }
+
+        files.forEach(file => {
+            const fileUrl = path.join(requestedPath, file).replace(/\\/g, '/');
+            const fullPath = path.join(filePath, file);
+            const isDirectory = fs.statSync(fullPath).isDirectory();
+            html += `<li><a href="${fileUrl}">${isDirectory ? '📁 ' : '🖼️ '}${file}</a></li>`;
+        });
+
+        html += `</ul></body></html>`;
+        res.send(html);
     });
 });
 
 // Start server
-// Make sure to run ipconfig to get correct IP
 app.listen(PORT, () => {
-  console.log(`Server running at http://${getLocalIP()}:${PORT}`)
+    const localUrl = `http://localhost:${PORT}`;
+    const networkUrl = `http://${getLocalIP()}:${PORT}`;
+    console.log(`Server running at ${localUrl} (network: ${networkUrl})`);
+
+    // Auto-open the browser when the dist build is present (i.e. running as packaged app)
+    if (fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
+        exec(`start "" "${localUrl}"`, (err) => {
+            if (err) console.log(`Open your browser to: ${localUrl}`);
+        });
+    }
 });
