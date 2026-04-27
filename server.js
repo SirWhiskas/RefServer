@@ -166,6 +166,14 @@ function imageApiHandler(req, res, onlyFolders = false) {
     }
 }
 
+const API_TOKEN = process.env.API_TOKEN;
+
+app.use((req, res, next) => {
+    if (!API_TOKEN) return next();
+    if (req.headers['x-api-key'] === API_TOKEN) return next();
+    return res.status(401).json({ error: 'Unauthorized' });
+});
+
 /**
  * Middleware to prevent access outside the ROOT_DIR
  */
