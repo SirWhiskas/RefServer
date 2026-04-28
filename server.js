@@ -15,6 +15,9 @@ const IMAGE_ROOT_PATH = process.env.IMAGE_ROOT_PATH || '/';
 
 const PORT = process.env.PORT || 8000;
 const ROOT_DIR = path.resolve(IMAGE_ROOT_PATH);
+const COMPRESSED_ROOT_PATH = process.env.COMPRESSED_ROOT_PATH;
+const COMPRESSED_DIR = COMPRESSED_ROOT_PATH ? path.resolve(COMPRESSED_ROOT_PATH) : null;
+const SERVE_DIR = COMPRESSED_DIR || ROOT_DIR;
 const DIST_DIR = path.join(__dirname, 'dist');
 
 const CACHE_FILE = path.resolve("cache.json");
@@ -42,17 +45,20 @@ function getLocalIP() {
 }
 
 function isSafePath(p) {
-    return path.resolve(p).startsWith(ROOT_DIR);
+    return path.resolve(p).startsWith(SERVE_DIR);
 }
 
 // Load cache from file
 function loadCacheFromFile() {
     try {
         if (fs.existsSync(CACHE_FILE)) {
-            return JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+            const contents = fs.readFileSync(CACHE_FILE, "utf8");
+            if (!contents.trim()) return {};
+            return JSON.parse(contents);
         }
     } catch (err) {
-        console.error("Error reading cache file:", err);
+        console.error("Cache file corrupted, resetting:", err.message);
+        try { fs.unlinkSync(CACHE_FILE); } catch {}
     }
     return {};
 }
@@ -90,7 +96,7 @@ function readDirectoryRecursive(directory, keyPrefix = '', onlyFolders = false) 
                     label: file,
                     data: `${file} folder`,
                     icon: 'pi pi-folder',
-                    path: filePath.replace(ROOT_DIR, ""),
+                    path: filePath.replace(SERVE_DIR, ""),
                     children: readDirectoryRecursive(filePath, `${keyPrefix}${fileIndex}-`, onlyFolders)
                 });
             } else if (!onlyFolders) {
@@ -99,7 +105,7 @@ function readDirectoryRecursive(directory, keyPrefix = '', onlyFolders = false) 
                     label: file,
                     data: `${file} image`,
                     icon: 'pi pi-image',
-                    path: filePath.replace(ROOT_DIR, "")
+                    path: filePath.replace(SERVE_DIR, "")
                 });
             }
 
@@ -115,9 +121,9 @@ function readDirectoryRecursive(directory, keyPrefix = '', onlyFolders = false) 
 function imageApiHandler(req, res, onlyFolders = false) {
     try {
         const folderPath = req.params[0] || '';
-        const dirPath = path.join(ROOT_DIR, folderPath);
+        const dirPath = path.join(SERVE_DIR, folderPath);
         const resolvedDirPath = path.resolve(dirPath);
-
+console.log(resolvedDirPath);
         const cacheKeyName = onlyFolders ? resolvedDirPath + '-onlyFolders' : resolvedDirPath;
 
         // Security check: Prevent access outside ROOT_DIR
@@ -170,7 +176,7 @@ const API_TOKEN = process.env.API_TOKEN;
 
 app.use((req, res, next) => {
     if (!API_TOKEN) return next();
-    if (req.headers['x-api-key'] === API_TOKEN) return next();
+    if (req.headers['x-api-key'] === API_TOKEN || req.query['api_key'] === API_TOKEN) return next();
     return res.status(401).json({ error: 'Unauthorized' });
 });
 
@@ -179,11 +185,11 @@ app.use((req, res, next) => {
  */
 app.use((req, res, next) => {
     if (req.path === BASE_API_URL) {
-        req.filePath = ROOT_DIR;
+        req.filePath = SERVE_DIR;
         return next();
     }
     const requestedPath = decodeURIComponent(req.path);
-    const filePath = path.join(ROOT_DIR, requestedPath);
+    const filePath = path.join(SERVE_DIR, requestedPath);
 
     // Prevent directory traversal attacks
     if (!isSafePath(filePath)) {
@@ -199,10 +205,10 @@ app.use((req, res, next) => {
  */
 app.get(`${BASE_API_URL}/random-images/*`, (req, res) => {
     const folderPath = req.params[0] || '';
-    const dirPath = path.join(ROOT_DIR, folderPath);
+    const dirPath = path.join(SERVE_DIR, folderPath);
     const resolvedDirPath = path.resolve(dirPath);
 
-    // Security check: Prevent access outside ROOT_DIR
+    // Security check: Prevent access outside SERVE_DIR
     if (!isSafePath(dirPath)) {
         return res.status(403).json({ error: 'Access Denied' });
     }
@@ -249,13 +255,16 @@ app.get(`${BASE_API_URL}/folders/*`, (req, res) => imageApiHandler(req, res, tru
 app.get(`${BASE_API_URL}/images`, (req, res) => imageApiHandler(req, res, false));
 app.get(`${BASE_API_URL}/images/*`, (req, res) => imageApiHandler(req, res, false));
 
+// Serve originals at /originals for full-res access
+app.use('/originals', express.static(ROOT_DIR));
+
 // Serve the bundled Vue app (JS, CSS, index.html)
 if (fs.existsSync(DIST_DIR)) {
     app.use(express.static(DIST_DIR));
 }
 
-// Serve image files with ETags, Range support, and cache headers
-app.use(express.static(ROOT_DIR));
+// Serve image files (compressed if available, otherwise originals)
+app.use(express.static(SERVE_DIR));
 
 /**
  * Fallback: serve Vue's index.html for any unmatched route (SPA routing).
