@@ -118,6 +118,57 @@ function readDirectoryRecursive(directory, keyPrefix = '', onlyFolders = false) 
     return results;
 }
 
+function collectStats() {
+    let totalImages = 0;
+    let totalFolders = 0;
+    let totalSizeBytes = 0;
+    let compressedImages = 0;
+
+    function walk(currentDir) {
+        let files;
+        try {
+            files = fs.readdirSync(currentDir);
+        } catch {
+            return;
+        }
+
+        for (const file of files) {
+            const filePath = path.join(currentDir, file);
+            let stats;
+            try {
+                stats = fs.statSync(filePath);
+            } catch {
+                continue;
+            }
+
+            if (stats.isDirectory()) {
+                totalFolders++;
+                walk(filePath);
+            } else if (path.extname(file).toLowerCase() in IMAGE_EXTENSIONS) {
+                totalImages++;
+                totalSizeBytes += stats.size;
+
+                if (COMPRESSED_DIR) {
+                    const relativePath = path.relative(ROOT_DIR, filePath);
+                    if (fs.existsSync(path.join(COMPRESSED_DIR, relativePath))) {
+                        compressedImages++;
+                    }
+                }
+            }
+        }
+    }
+
+    walk(ROOT_DIR);
+
+    return {
+        totalImages,
+        totalFolders,
+        totalSizeMB: Math.round((totalSizeBytes / (1024 * 1024)) * 10) / 10,
+        compressedImages: COMPRESSED_DIR ? compressedImages : 0,
+        uncompressedImages: COMPRESSED_DIR ? totalImages - compressedImages : totalImages
+    };
+}
+
 function imageApiHandler(req, res, onlyFolders = false) {
     try {
         const folderPath = req.params[0] || '';
@@ -254,6 +305,18 @@ app.get(`${BASE_API_URL}/folders/*`, (req, res) => imageApiHandler(req, res, tru
  */
 app.get(`${BASE_API_URL}/images`, (req, res) => imageApiHandler(req, res, false));
 app.get(`${BASE_API_URL}/images/*`, (req, res) => imageApiHandler(req, res, false));
+
+/**
+ * API Route: Return aggregate stats about the image library
+ */
+app.get(`${BASE_API_URL}/admin/stats`, (req, res) => {
+    try {
+        res.json(collectStats());
+    } catch (err) {
+        console.error('Error computing stats:', err);
+        res.status(500).json({ error: 'Failed to compute stats' });
+    }
+});
 
 // Serve originals at /originals for full-res access
 app.use('/originals', express.static(ROOT_DIR));
