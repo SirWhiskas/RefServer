@@ -165,7 +165,7 @@ function collectStats() {
         totalFolders,
         totalSizeMB: Math.round((totalSizeBytes / (1024 * 1024)) * 10) / 10,
         compressedImages: COMPRESSED_DIR ? compressedImages : 0,
-        uncompressedImages: COMPRESSED_DIR ? totalImages - compressedImages : totalImages
+        pendingCompression: COMPRESSED_DIR ? totalImages - compressedImages : totalImages
     };
 }
 
@@ -174,7 +174,7 @@ function imageApiHandler(req, res, onlyFolders = false) {
         const folderPath = req.params[0] || '';
         const dirPath = path.join(SERVE_DIR, folderPath);
         const resolvedDirPath = path.resolve(dirPath);
-console.log(resolvedDirPath);
+        console.log(resolvedDirPath);
         const cacheKeyName = onlyFolders ? resolvedDirPath + '-onlyFolders' : resolvedDirPath;
 
         // Security check: Prevent access outside ROOT_DIR
@@ -315,6 +315,36 @@ app.get(`${BASE_API_URL}/admin/stats`, (req, res) => {
     } catch (err) {
         console.error('Error computing stats:', err);
         res.status(500).json({ error: 'Failed to compute stats' });
+    }
+});
+
+app.get(`${BASE_API_URL}/admin/cache`, (req, res) => {
+    try {
+        // Display current cache
+        res.json(cache);
+    } catch (err) {
+        console.error('Error reading cache:', err);
+        res.status(500).json({ error: 'Failed to read cache' });
+    }
+});
+
+app.delete(`${BASE_API_URL}/admin/cache`, (req, res) => {
+    try {
+        cache = {};
+    } catch (err) {
+        console.error('Error computing stats:', err);
+        res.status(500).json({ error: 'Failed to read cache' });
+    }
+});
+
+app.delete(`${BASE_API_URL}/admin/cache/*`, (req, res) => {
+    try {
+        const key = req.params[0];
+
+        
+    } catch (err) {
+        console.error('Error computing stats:', err);
+        res.status(500).json({ error: 'Failed to read cache' });
     }
 });
 
