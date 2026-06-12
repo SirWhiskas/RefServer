@@ -149,7 +149,7 @@ function collectStats() {
                 totalSizeBytes += stats.size;
 
                 if (COMPRESSED_DIR) {
-                    const relativePath = path.relative(ROOT_DIR, filePath);
+                    const relativePath = path.relative(ROOT_DIR, filePath).replace(/\.[^.]+$/, '.webp');
                     if (fs.existsSync(path.join(COMPRESSED_DIR, relativePath))) {
                         compressedImages++;
                     }
@@ -165,7 +165,7 @@ function collectStats() {
         totalFolders,
         totalSizeMB: Math.round((totalSizeBytes / (1024 * 1024)) * 10) / 10,
         compressedImages: COMPRESSED_DIR ? compressedImages : 0,
-        uncompressedImages: COMPRESSED_DIR ? totalImages - compressedImages : totalImages
+        pendingCompression: COMPRESSED_DIR ? totalImages - compressedImages : totalImages
     };
 }
 
