@@ -331,20 +331,26 @@ app.get(`${BASE_API_URL}/admin/cache`, (req, res) => {
 app.delete(`${BASE_API_URL}/admin/cache`, (req, res) => {
     try {
         cache = {};
+        saveCacheToFile(cache);
+        res.json({ success: true });
     } catch (err) {
-        console.error('Error computing stats:', err);
-        res.status(500).json({ error: 'Failed to read cache' });
+        console.error('Error clearing cache:', err);
+        res.status(500).json({ error: 'Failed to clear cache' });
     }
 });
 
 app.delete(`${BASE_API_URL}/admin/cache/*`, (req, res) => {
     try {
-        const key = req.params[0];
-
-        
+        const key = decodeURIComponent(req.params[0]);
+        if (!(key in cache)) {
+            return res.status(404).json({ error: 'Cache entry not found' });
+        }
+        delete cache[key];
+        saveCacheToFile(cache);
+        res.json({ success: true });
     } catch (err) {
-        console.error('Error computing stats:', err);
-        res.status(500).json({ error: 'Failed to read cache' });
+        console.error('Error clearing cache entry:', err);
+        res.status(500).json({ error: 'Failed to clear cache entry' });
     }
 });
 
