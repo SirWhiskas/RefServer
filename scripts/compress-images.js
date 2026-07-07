@@ -1,7 +1,11 @@
-require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
-const fs = require('fs');
-const path = require('path');
-const sharp = require('sharp');
+import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+import sharp from 'sharp';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const IMAGE_ROOT = path.resolve(process.env.IMAGE_ROOT_PATH || '/');
 const COMPRESSED_ROOT = path.resolve(process.env.COMPRESSED_ROOT_PATH || IMAGE_ROOT + '_Compressed');

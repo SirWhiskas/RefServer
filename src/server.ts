@@ -1,175 +1,24 @@
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const { exec } = require('child_process');
-const express = require('express');
-const cors = require('cors');
-require('dotenv').config();
+import fs from 'fs';
+import path from 'path';
+
+import { exec } from 'child_process';
+import express from 'express';
+import type { Request, Response } from 'express';
+import cors from 'cors';
+import { fileURLToPath } from 'url';
+
+import { getCache, getCacheEntry, setCacheEntry, deleteCacheEntry, clearCache } from './cache.js';
+import { shuffleArray, getLocalIP } from './utils.js';
+import { isSafePath, collectStats, readDirectoryRecursive } from './fsTree.js';
+import { SERVE_DIR, IMAGE_EXTENSIONS, BASE_API_URL, API_TOKEN, ROOT_DIR, DIST_DIR, PORT } from './config.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 
 app.use(cors());
 
-const BASE_API_URL = process.env.BASE_API_URL || '/my/api/path';
-const IMAGE_ROOT_PATH = process.env.IMAGE_ROOT_PATH || '/';
-
-const PORT = process.env.PORT || 8000;
-const ROOT_DIR = path.resolve(IMAGE_ROOT_PATH);
-const COMPRESSED_ROOT_PATH = process.env.COMPRESSED_ROOT_PATH;
-const COMPRESSED_DIR = COMPRESSED_ROOT_PATH ? path.resolve(COMPRESSED_ROOT_PATH) : null;
-const SERVE_DIR = COMPRESSED_DIR || ROOT_DIR;
-const DIST_DIR = path.join(__dirname, 'dist');
-
-const CACHE_FILE = path.resolve("cache.json");
-const CACHE_EXPIRATION = 1000 * 60 * 60; // 1 hour
-
-const IMAGE_EXTENSIONS = {
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.png': 'image/png',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp'
-};
-
-// Get the local network IP
-function getLocalIP() {
-    const interfaces = os.networkInterfaces();
-    for (let iface of Object.values(interfaces)) {
-        for (let config of iface) {
-            if (config.family === 'IPv4' && !config.internal) {
-                return config.address;
-            }
-        }
-    }
-    return 'localhost';
-}
-
-function isSafePath(p) {
-    return path.resolve(p).startsWith(SERVE_DIR);
-}
-
-// Load cache from file
-function loadCacheFromFile() {
-    try {
-        if (fs.existsSync(CACHE_FILE)) {
-            const contents = fs.readFileSync(CACHE_FILE, "utf8");
-            if (!contents.trim()) return {};
-            return JSON.parse(contents);
-        }
-    } catch (err) {
-        console.error("Cache file corrupted, resetting:", err.message);
-        try { fs.unlinkSync(CACHE_FILE); } catch {}
-    }
-    return {};
-}
-
-// Save cache to file
-function saveCacheToFile(cache) {
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), "utf8");
-}
-
-let cache = loadCacheFromFile();
-
-// Utility function to shuffle an array
-function shuffleArray(array) {
-    return array
-        .map(value => ({ value, sort: Math.random() }))
-        .sort((a, b) => a.sort - b.sort)
-        .map(({ value }) => value);
-}
-
-// Read the directory recursively and return a tree structure
-function readDirectoryRecursive(directory, keyPrefix = '', onlyFolders = false) {
-    let results = [];
-
-    try {
-        const files = fs.readdirSync(directory);
-
-        let fileIndex = 0;
-        for (const file of files) {
-            const filePath = path.join(directory, file);
-            const stats = fs.statSync(filePath);
-
-            if (stats.isDirectory()) {
-                results.push({
-                    key: `${keyPrefix}${fileIndex}`,
-                    label: file,
-                    data: `${file} folder`,
-                    icon: 'pi pi-folder',
-                    path: filePath.replace(SERVE_DIR, ""),
-                    children: readDirectoryRecursive(filePath, `${keyPrefix}${fileIndex}-`, onlyFolders)
-                });
-            } else if (!onlyFolders) {
-                results.push({
-                    key: `${keyPrefix}${fileIndex}`,
-                    label: file,
-                    data: `${file} image`,
-                    icon: 'pi pi-image',
-                    path: filePath.replace(SERVE_DIR, "")
-                });
-            }
-
-            fileIndex++;
-        }
-    } catch (err) {
-        console.error(`Error reading directory ${directory}:`, err);
-    }
-
-    return results;
-}
-
-function collectStats() {
-    let totalImages = 0;
-    let totalFolders = 0;
-    let totalSizeBytes = 0;
-    let compressedImages = 0;
-
-    function walk(currentDir) {
-        let files;
-        try {
-            files = fs.readdirSync(currentDir);
-        } catch {
-            return;
-        }
-
-        for (const file of files) {
-            const filePath = path.join(currentDir, file);
-            let stats;
-            try {
-                stats = fs.statSync(filePath);
-            } catch {
-                continue;
-            }
-
-            if (stats.isDirectory()) {
-                totalFolders++;
-                walk(filePath);
-            } else if (path.extname(file).toLowerCase() in IMAGE_EXTENSIONS) {
-                totalImages++;
-                totalSizeBytes += stats.size;
-
-                if (COMPRESSED_DIR) {
-                    const relativePath = path.relative(ROOT_DIR, filePath).replace(/\.[^.]+$/, '.webp');
-                    if (fs.existsSync(path.join(COMPRESSED_DIR, relativePath))) {
-                        compressedImages++;
-                    }
-                }
-            }
-        }
-    }
-
-    walk(ROOT_DIR);
-
-    return {
-        totalImages,
-        totalFolders,
-        totalSizeMB: Math.round((totalSizeBytes / (1024 * 1024)) * 10) / 10,
-        compressedImages: COMPRESSED_DIR ? compressedImages : 0,
-        pendingCompression: COMPRESSED_DIR ? totalImages - compressedImages : totalImages
-    };
-}
-
-function imageApiHandler(req, res, onlyFolders = false) {
+function imageApiHandler(req: Request, res: Response, onlyFolders = false) {
     try {
         const folderPath = req.params[0] || '';
         const dirPath = path.join(SERVE_DIR, folderPath);
@@ -182,17 +31,9 @@ function imageApiHandler(req, res, onlyFolders = false) {
             return res.status(403).json({ error: 'Access Denied' });
         }
 
-        // Attempt to laod from cache
-        let cache = loadCacheFromFile();
-
-        // Uncomment to enable cache expiration
-        // if (cache[cacheKeyName] && Date.now() - cache[cacheKeyName].lastUpdated < CACHE_EXPIRATION)  {
-            
-        //     return res.json(cache[cacheKeyName].data);
-        // }
-        if (cache[cacheKeyName])  {
-            
-            return res.json(cache[cacheKeyName].data);
+        const cacheEntry = getCacheEntry(cacheKeyName);
+        if (cacheEntry) {
+            return res.json(cacheEntry.data);
         }
 
         fs.stat(resolvedDirPath, (err, stats) => {
@@ -208,12 +49,7 @@ function imageApiHandler(req, res, onlyFolders = false) {
             } else {
                 const images = readDirectoryRecursive(resolvedDirPath, '', onlyFolders);
 
-                cache[cacheKeyName] = {
-                    lastUpdated: Date.now(),
-                    data: images
-                };
-
-                saveCacheToFile(cache);
+                setCacheEntry(cacheKeyName, images);
 
                 res.json(images);
             }
@@ -222,8 +58,6 @@ function imageApiHandler(req, res, onlyFolders = false) {
         console.error(`Error in imageApiHandler:`, err);
     }
 }
-
-const API_TOKEN = process.env.API_TOKEN;
 
 app.use((req, res, next) => {
     if (!API_TOKEN) return next();
@@ -254,10 +88,12 @@ app.use((req, res, next) => {
 /**
  * Serve random set of images in a given folder
  */
-app.get(`${BASE_API_URL}/random-images/*`, (req, res) => {
+app.get(`${BASE_API_URL}/random-images/*`, (req: Request, res: Response) => {
     const folderPath = req.params[0] || '';
     const dirPath = path.join(SERVE_DIR, folderPath);
     const resolvedDirPath = path.resolve(dirPath);
+
+    const numberOfImagesRequested = req.query.num as string;
 
     // Security check: Prevent access outside SERVE_DIR
     if (!isSafePath(dirPath)) {
@@ -283,7 +119,9 @@ app.get(`${BASE_API_URL}/random-images/*`, (req, res) => {
                 return res.status(404).json({ error: 'No images found' });
             }
 
-            const numImages = parseInt(req.query.num, 10) || 5;
+            
+
+            const numImages = parseInt(numberOfImagesRequested, 10) || 5;
             const shuffledImages = shuffleArray(imageFiles);
             const selectedImages = shuffledImages.slice(0, numImages);
 
@@ -321,7 +159,7 @@ app.get(`${BASE_API_URL}/admin/stats`, (req, res) => {
 app.get(`${BASE_API_URL}/admin/cache`, (req, res) => {
     try {
         // Display current cache
-        res.json(cache);
+        res.json(getCache());
     } catch (err) {
         console.error('Error reading cache:', err);
         res.status(500).json({ error: 'Failed to read cache' });
@@ -330,8 +168,7 @@ app.get(`${BASE_API_URL}/admin/cache`, (req, res) => {
 
 app.delete(`${BASE_API_URL}/admin/cache`, (req, res) => {
     try {
-        cache = {};
-        saveCacheToFile(cache);
+        clearCache();
         res.json({ success: true });
     } catch (err) {
         console.error('Error clearing cache:', err);
@@ -339,14 +176,14 @@ app.delete(`${BASE_API_URL}/admin/cache`, (req, res) => {
     }
 });
 
-app.delete(`${BASE_API_URL}/admin/cache/*`, (req, res) => {
+app.delete(`${BASE_API_URL}/admin/cache/*`, (req: Request, res: Response) => {
     try {
-        const key = decodeURIComponent(req.params[0]);
-        if (!(key in cache)) {
+        const encodedKey = req.params[0] as string;
+        const key = decodeURIComponent(encodedKey);
+        if (!getCacheEntry(key)) {
             return res.status(404).json({ error: 'Cache entry not found' });
         }
-        delete cache[key];
-        saveCacheToFile(cache);
+        deleteCacheEntry(key);
         res.json({ success: true });
     } catch (err) {
         console.error('Error clearing cache entry:', err);
@@ -378,6 +215,8 @@ app.get('*', (req, res) => {
     // Dev fallback: basic directory browser
     const requestedPath = decodeURIComponent(req.path);
     const filePath = req.filePath;
+
+    if (!filePath) return res.status(500);
 
     fs.readdir(filePath, (err, files) => {
         if (err) {
